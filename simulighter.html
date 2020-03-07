@@ -1,0 +1,926 @@
+<html>
+<head>
+	<meta charset="utf-8" />
+	<meta name="viewport" content="initial-scale=1.0" />
+	<title>Light Simulator</title>
+
+	<script src="p5.js"></script>
+
+	<style type="text/css">
+		html, body {
+			padding: 0px;
+			margin: 0px;
+		}
+		ul.toolbar li{
+			float: left;
+			padding-left: 1em;
+			padding-bottom: 5px;
+		}
+
+		div.edit-toolbar {
+			float: right;
+			margin: 0.5em;
+		}
+
+		ul.toolbar li button {
+			background-color: #262626;
+			border-width: 0px;
+			color: white;
+			padding: 0.8em 1.2em 0.8em 1.2em;
+		}
+		ul.toolbar li button:hover {
+			background-color: #000000;
+		}
+	</style>
+</head>
+<body>
+
+	<div style="padding: 0;">
+		<ul style="list-style-type: none;" class="toolbar">
+			<li><button id="ray-btn">Ray</button></li>
+			<li><button id="plain-btn">Plain Mirror</button></li>
+			<li><button id="mirror-btn">Curved Mirror</button></li>
+			<li><button id="polyMirror-btn">Poly Mirror</button></li>
+			<li><button id="medium-btn">Medium</button></li>
+			<li><button id="lens-btn">Lens</button></li>
+			<li><button id="point-btn">Point</button></li>
+
+
+		</ul>
+	</div>
+	<div class="edit-toolbar">
+		<button id="grid">Grid</button>
+		<button id="undo">Undo</button>
+		<button id="redo">Redo</button>
+	</div>
+	<div id="sketch-holder">
+		<!-- Our sketch will go here! -->
+	</div>
+	<script type="text/javascript">
+
+			let scaleAngle = function(angle){
+				while(angle<0)
+					angle+=2*PI;
+				while(angle>2*PI)
+					angle-=2*PI;
+				return angle;
+			}
+
+			let distance = function(fixed,rotate)
+			{
+				return sqrt((rotate.x - fixed.x)**2 + (rotate.y - fixed.y)**2)
+			}
+
+			let inBetween = function(x,constrain1,constrain2)
+			{
+				if(x<max(constrain1,constrain2)&&x>min(constrain1,constrain2))
+					return true;
+				else
+					return false;
+			}
+
+			let inBetweenEdge = function(x,constrain1,constrain2)
+			{
+				if(x>max(constrain1,constrain2)||x<min(constrain1,constrain2))
+					return true;
+				else
+					return false;
+			}
+
+			let swap = function(a,b){
+				let swapTemp = a;
+				a = b;
+				b = swapTemp; 
+			}
+
+			let inclination = function(fixed,rotate){
+				return scaleAngle(atan2(rotate.y - fixed.y, rotate.x - fixed.x));
+			}
+
+			let transformRotate = function(fixed,rotate,angle){
+				var nx = (rotate.x-fixed.x)*cos(angle) - (rotate.y-fixed.y)*sin(angle) + fixed.x;
+				var ny = (rotate.x-fixed.x)*sin(angle) + (rotate.y-fixed.y)*cos(angle) + fixed.y;
+				let rotatedPoint = new Point(nx,ny);
+				return rotatedPoint;
+			}
+
+			let findX = function(fixed,rotate,y){
+				return ((y-fixed.y)/(rotate.y-fixed.y)*(rotate.x-fixed.x)+fixed.x);				
+			}
+
+			let findY = function(fixed,rotate,x){
+				return ((x-fixed.x)/(rotate.x-fixed.x)*(rotate.y-fixed.y)+fixed.y);				
+			}
+
+			let extend = function(fixed,rotate){	// extends 'rotate' away from 'fixed' and returns an end point
+				endPoint = new Point();
+				var end;
+				if(rotate.y==fixed.y){
+					if(rotate.x>fixed.x)
+						end=windowWidth;
+					else if(rotate.x<fixed.x)
+						end=0;
+					endPoint.x=end;
+					endPoint.y = rotate.y;
+				}
+				else{
+					if(rotate.y>fixed.y)
+						end=windowHeight;
+					else if (rotate.y<fixed.y)
+						end=0;
+					endPoint.x=findX(fixed,rotate,end);
+					endPoint.y=end;
+				}
+				return endPoint;
+			}
+
+			// let input = function(button){
+			// 	switch(body){
+			// 		case "mirror-btn":
+			// 		break;
+			// 		case "lens-btn":
+			// 		break;
+			// 		case "medium-btn":
+			// 		break;
+			// 	}
+			// }
+
+			let Point = function(x,y){
+				if(typeof Point.prototype.type === "undefined")
+				Point.prototype.type = "Point";
+
+				this.x = x;
+				this.y = y;
+
+				if(typeof this.draw !== 'function'){
+					Point.prototype.draw = function(){
+						push();
+						fill(255,0,0);
+						stroke(255,0,0);
+						strokeWeight(10);
+						point(this.x, this.y);
+						pop();
+					};
+				}
+
+			}
+
+		let Line  = function(p1, p2){
+			if(typeof Line.prototype.type === "undefined")
+				Line.prototype.type = "Line";
+
+			this.start = p1;
+			this.next  = p2;
+
+			if(typeof this.distanceFromLine !== 'function'){
+				Line.prototype.distanceFromLine = function(fixed){
+					return abs(((this.start.y - this.next.y)*(fixed.x - this.start.x) - (this.start.x - this.next.x)*(fixed.y - this.start.y))
+						/sqrt((this.start.y-this.next.y)**2 + (this.start.x-this.next.x)**2));
+				}
+			}
+
+			if(typeof this.getSlope !== 'function'){
+				Line.prototype.getSlope = function(){
+					return (this.start.y - this.next.y)/(this.start.x - this.next.x);
+				}
+			}
+
+			if(typeof this.checkIntersect !== 'function'){
+				Line.prototype.checkIntersect = function(body){
+					// equation of line a1 x + b1 y = c
+					
+
+					switch(body.type){
+						case "Mirror":
+							// mirror intersection
+							// using equation in slope line form  y - y' = m*(x - x')
+							// x = r*cos angle + body.center.x  y = r*sin angle + body.center.y;
+							let lineSlope = this.getSlope();
+							if (this.distanceFromLine(body.center)>=body.roc)
+								break;
+							let eqConst = (this.start.y - body.center.y + lineSlope*(body.center.x - this.start.x))/body.roc;
+							let alpha   = acos(-lineSlope/(sqrt(1 + lineSlope ** 2)));
+							let beta = acos(eqConst/(sqrt(1 + lineSlope ** 2)));
+							let theta = [scaleAngle(alpha - beta),scaleAngle(alpha + beta)];
+							let mini = scaleAngle(min(body.angle,2*PI - body.angle)+body.tempangle);
+							let maxi = scaleAngle(max(body.angle,2*PI - body.angle)+body.tempangle);
+							let pointArray = new Array();
+							let p,p1,p2;
+
+							for (var i = 0; i < 2; i++) {
+
+								if (((mini<maxi)&&inBetweenEdge(theta[i],mini,maxi))||((mini>maxi)&&inBetween(theta[i],mini,maxi)))
+								{	// constrain for arc intersection
+									p = new Point(
+								 	(body.roc * cos(theta[i]) + body.center.x),
+								 	(body.roc * sin(theta[i]) + body.center.y)
+								 	);
+								 	
+								 	if ((abs(p.x - this.start.x)>1 || abs(p.y - this.start.y)>1) &&
+								 		abs(inclination(this.start,this.next)-inclination(this.start,p))<1) // if ray is pointed opposite)
+								 	{	//check if start and intersection is same
+										p.draw();
+										pointArray.push(p);
+									}
+								}
+							}
+							// if multiple point intersect then select the closest point
+							if (pointArray.length==2){
+								if(distance(this.start,p2 = pointArray.pop())>distance(this.start,p1 = pointArray.pop()))
+									return p1;
+								else
+									return p2;
+							}
+							else if (pointArray.length == 1)
+								return pointArray.pop();
+							else
+							;					
+							break;
+						
+						case "Plain":{
+							// plain intersect
+							let a1=this.start.y-this.next.y,b1=-(this.start.x-this.next.x),
+							c1=this.start.x*(this.start.y-this.next.y)-this.start.y*(this.start.x-this.next.x);
+							a2=body.plainStart.y-body.plainNext.y,b2=-(body.plainStart.x-body.plainNext.x),
+							c2=body.plainStart.x*(body.plainStart.y-body.plainNext.y)-body.plainStart.y*(body.plainStart.x-body.plainNext.x);
+							// condition for line intersection
+							if(a1/a2 != b1/b2){
+								let p1 = new Point((c1*b2 - b1*c2)/(a1*b2-b1*a2),(a1*c2-c1*a2)/(a1*b2-b1*a2));
+								if(	inBetween(p1.x,body.plainStart.x, body.plainNext.x)&&
+									inBetween(p1.y,body.plainStart.y, body.plainNext.y)&&	// constrain for segment intersection
+									(abs(p1.x - this.start.x)>1 || abs(p1.y - this.start.y)>1)&& //check if start and intersection is same
+									abs(inclination(this.start,this.next)-inclination(this.start,p1))<1 // if ray is pointed opposite
+									)	 
+								{	
+											return p1;	 
+								}
+							}
+						}
+							break;
+
+						case "Medium":{
+							// plain intersect
+							let a1=this.start.y-this.next.y,b1=-(this.start.x-this.next.x),
+							c1=this.start.x*(this.start.y-this.next.y)-this.start.y*(this.start.x-this.next.x);
+							a2=body.mediumExtreme1.y-body.mediumExtreme2.y,b2=-(body.mediumExtreme1.x-body.mediumExtreme2.x),
+							c2=body.mediumExtreme1.x*(body.mediumExtreme1.y-body.mediumExtreme2.y)-body.mediumExtreme1.y*(body.mediumExtreme1.x-body.mediumExtreme2.x);
+							// condition for line intersection
+							if(a1/a2 != b1/b2){
+								let p1 = new Point((c1*b2 - b1*c2)/(a1*b2-b1*a2),(a1*c2-c1*a2)/(a1*b2-b1*a2));
+								if(	inBetween(p1.x,body.mediumExtreme1.x, body.mediumExtreme2.x)&&
+									inBetween(p1.y,body.mediumExtreme1.y, body.mediumExtreme2.y)&&	// constrain for segment intersection
+									(abs(p1.x - this.start.x)>1 || abs(p1.y - this.start.y)>1)&& //check if start and intersection is same
+									abs(inclination(this.start,this.next)-inclination(this.start,p1))<1 // if ray is pointed opposite
+									)	 
+								{	
+											return p1;	 
+								}
+							}
+						}
+							break;
+						case "Lens":
+
+							break;
+					}
+				}
+			}
+
+			if(typeof this.refract !== 'function'){
+				Line.prototype.refract = function(p,body){
+					// REFRACT
+					this.next = p;
+					
+					switch(body.type){
+						case 'Medium':
+						{
+							// medium refract
+							var lineInclination = inclination(this.next,this.start);
+							var mediumInclination = inclination(this.next,body.mediumStart);
+							if(abs(lineInclination - mediumInclination)>180){
+								mediumInclination = inclination(this.next,body.mediumNext);
+							}
+							let lineAngle = 2*(lineInclination - mediumInclination)/abs(lineInclination - mediumInclination)*(PI/2 - abs(lineInclination - mediumInclination));
+							let newLine = new Line(this.next,transformRotate(this.next,this.start,lineAngle));
+							return newLine;
+						}
+							break;
+							
+						// case 'Mirror':
+						// {
+						// 	var lineInclination = inclination(this.next,this.start);
+						// 	var normalInclination = inclination(this.next,body.center);
+
+						// 	lineAngle = 2*(normalInclination - lineInclination);
+							
+						// 	let newLine = new Line(this.next, transformRotate(this.next,this.start,lineAngle));
+						// 	return newLine;
+						// }
+						// 	break;
+					}
+				}
+			}
+
+			if(typeof this.reflect !== 'function'){
+				Line.prototype.reflect = function(p,body){
+					// REFLECT
+					this.next = p;
+					
+					switch(body.type){
+						// case 'polyMirror':
+						case 'Plain':
+						{
+							// plain reflect
+							var lineInclination = inclination(this.next,this.start);
+							var plainInclination = inclination(this.next,body.plainStart);
+							if(abs(lineInclination - plainInclination)>PI){
+								plainInclination = inclination(this.next,body.plainNext);
+							}
+							let lineAngle = 2*(lineInclination - plainInclination)/abs(lineInclination - plainInclination)*(PI/2 - abs(lineInclination - plainInclination));
+							let newLine = new Line(this.next,transformRotate(this.next,this.start,lineAngle));
+							return newLine;
+						}
+							break;
+							
+						case 'Mirror':
+						{
+							var lineInclination = inclination(this.next,this.start);
+							var normalInclination = inclination(this.next,body.center);
+
+							lineAngle = 2*(normalInclination - lineInclination);
+							
+							let newLine = new Line(this.next, transformRotate(this.next,this.start,lineAngle));
+							return newLine;
+						}
+							break;
+					}
+				}
+			}
+
+			if(typeof this.extend !== 'function'){
+				Line.prototype.extend = function(){				
+						this.next = extend(this.start,this.next);
+					}
+				}
+			
+			
+			if(typeof this.draw !== 'function'){
+				Line.prototype.draw = function(){
+					line(this.start.x, this.start.y, this.next.x, this.next.y);
+				};
+			}
+		};
+		
+		let Ray = function(p1, p2){
+			// RAY
+			if(typeof Ray.prototype.type === "undefined")
+				Ray.prototype.type = "Ray";
+
+			this.start = p1; 	//start of ray
+			this.next  = p2;	//next point of ray, NOT NECESSARILY ON ANY LINE
+			this.lineList   = [new Line(this.start,this.next)];//todo EMPTY THIS AND FILL IN lines IN IT EVERY TIME
+
+			if(typeof this.draw !== 'function')
+				Ray.prototype.draw = function(){
+					this.lineList.forEach(function(Line){
+						Line.draw();
+					});
+					this.lineList = []; //todo empty list of line in ray, so next round of calculation can take place 
+				}
+
+			if(typeof this.emptyList !== 'function'){
+				Ray.prototype.emptyList = function(){
+					this.lineList = [];
+				}
+			}
+			
+			//todo ray intersection checking, ideally should work but please go through the logic as this 
+			//is the most crucial part
+			if(typeof this.checkIntersect !== 'function'){
+				Ray.prototype.checkIntersect = function(bodiesList){
+					//todo ASSUMPTION: this.lineList is empty at this point, and we are calculating possible lines of the RAY
+					//Added first line into this.lineList
+					
+					this.lineList   = [new Line(this.start,this.next)];
+
+					for(i=0; i<this.lineList.length; i++){
+						//Gets the latest line
+						let currLine = this.lineList[i];
+						
+						let nearObj = undefined;
+						let prevObj = undefined;
+						let body;
+						for(j=0; j<bodiesList.length; j++){
+							if (Array.isArray(bodiesList[j])){			// poly objects
+								for(k=0;k<bodiesList[j].length();k++){
+									nearObj = currLine.checkIntersect(bodiesList[j][k]);
+									if(nearObj !== undefined)
+									{
+										if(prevObj === undefined){
+											prevObj = nearObj;
+											body = bodiesList[j][k];
+										}
+										else if(distance(currLine.start,nearObj) < distance(currLine.start,prevObj)){
+											prevObj = nearObj;
+											body = bodiesList[j][k];
+										}
+										// break;//Found our intersection
+									}
+								}
+							}
+							else{										// single objects
+								nearObj = currLine.checkIntersect(bodiesList[j]);
+								if(nearObj !== undefined)
+								{
+									if(prevObj === undefined){
+										prevObj = nearObj;
+										body = bodiesList[j];
+									}
+									else if(distance(currLine.start,nearObj) < distance(currLine.start,prevObj)){
+										prevObj = nearObj;
+										body = bodiesList[j];
+									}
+									// break;//Found our intersection
+								}
+							}
+						}
+						
+						if(prevObj === undefined){
+							currLine.extend();
+						}
+						else{
+							//WE found an intersection point, so we must add a new line to the list
+							//and shorten the current line till the intersection point
+							//this.lineList[i].extend(reflectedLine.start.x, reflectedLine.start.y, 1, body);
+							this.lineList.push(currLine.reflect(prevObj,body));
+						}
+					}
+					
+					// this.lineList.forEach(function(line){
+					// 	line.draw();
+					// });
+				}
+			}
+		};
+
+		let Plain = function(p1,p2){
+			// PLAIN
+			if(typeof Plain.prototype.type === "undefined")
+				Plain.prototype.type = "Plain";
+
+			this.plainStart = p1;
+			this.plainNext = p2;
+			
+			if(typeof this.setPlainNext!== 'function'){
+				Plain.prototype.setPlainNext = function(x){
+					if(this.plainStart.y > x.y || (this.plainStart.y == x.y && this.plainStart.x > x.x)){
+						let tempMirrorRef = this.plainStart;
+						this.plainStart = x;
+						this.plainNext = tempMirrorRef;
+					}
+					else
+						this.plainNext = x;
+				}
+			}
+
+			if(typeof this.draw !== 'function'){
+				Plain.prototype.draw = function(){
+					line(this.plainStart.x, this.plainStart.y, this.plainNext.x, this.plainNext.y);
+				};
+			}
+		}
+
+		let polyMirror = function(p1, p2){
+			// POLYMIRROR
+			if(typeof polyMirror.prototype.type === "undefined")
+				polyMirror.prototype.type = "polyMirror";
+
+			this.start = p1; 	//start of ray
+			this.next  = p2;	//next point of ray, NOT NECESSARILY ON ANY LINE
+			this.mirrorList  = [new Plain(this.start,this.next)];//todo EMPTY THIS AND FILL IN lines IN IT EVERY TIME
+
+			if(typeof this.draw !== 'function')
+				polyMirror.prototype.draw = function(){
+					this.mirrorList.forEach(function(Plain){
+						Plain.draw();
+					});
+					// this.lineList = []; //todo empty list of line in ray, so next round of calculation can take place 
+				}
+		}
+		let Medium = function(p1,p2,RI){
+			// MEDIUM
+			if(typeof Medium.prototype.type === "undefined")
+				Medium.prototype.type = "Medium";
+
+			this.RI = RI;
+			this.mediumStart = p1;
+			this.mediumNext = p2;
+			this.mediumExtreme1 = p1;
+			this.mediumExtreme2 = p2;
+
+			if(typeof this.setMediumNext!== 'function'){
+				Medium.prototype.setMediumNext = function(x){
+					this.mediumNext = x;
+					this.mediumExtreme2 = extend(this.mediumStart,x);
+					this.mediumExtreme1 = extend(x,this.mediumStart);
+				}
+			}
+
+			if(typeof this.draw !== 'function'){
+				Medium.prototype.draw = function(){
+					line(this.mediumExtreme1.x, this.mediumExtreme1.y, this.mediumExtreme2.x, this.mediumExtreme2.y);
+					push();
+					noStroke();
+					fill(255,50);
+					arc(this.mediumStart.x,this.mediumStart.y,2*sqrt(windowHeight**2+windowWidth**2),2*sqrt(windowHeight**2+windowWidth**2),atan2(this.mediumNext.y-this.mediumStart.y,this.mediumNext.x-this.mediumStart.x),atan2(this.mediumNext.y-this.mediumStart.y,this.mediumNext.x-this.mediumStart.x)+PI);
+					pop();
+					this.mediumStart.draw();
+				};
+			}
+		}
+
+		let Mirror = function(p1,p2,p3,roc){
+			//MIRROR
+			if(typeof Mirror.prototype.type === "undefined")
+				Mirror.prototype.type = "Mirror";
+			this.roc = roc;
+			this.pole=p1;
+			this.start=p2;
+			this.end = p3;
+			this.tempangle=0;
+			this.center=new Point(this.pole.x-roc,this.pole.y);
+			this.angle = inclination(this.center,this.start);
+      
+			if(typeof this.setStart !=='function'){
+		      		Mirror.prototype.setStart = function(x, y){
+					this.start = new Point(x,y);
+					this.angle = inclination(this.center,this.start);
+					if(this.angle<PI)	// setting the top point as angle reference
+						this.angle = 2*PI - this.angle; 
+					
+        			}
+      			}
+      
+			if(typeof this.setEnd !=='function'){
+		      		Mirror.prototype.setEnd = function(x, y){
+					this.end = new Point(x,y);
+					this.tempangle = inclination(this.pole,this.end);	// rotating the lens
+					this.center.x=this.roc*cos(this.tempangle) +this.pole.x;			
+					this.center.y=(this.roc*sin(this.tempangle) + this.pole.y);
+					this.tempangle = scaleAngle(this.tempangle + PI); // adjusting tempangle as mirror is drawn opposite to center
+					
+        			}
+     			}
+			
+			if(typeof this.draw !=='function'){
+				// mirror draw
+				Mirror.prototype.draw = function(){
+					push();
+		  			noFill();
+		  			arc(this.center.x,this.center.y,this.roc*2,this.roc*2,
+		  				max(this.angle,2*PI - this.angle)+this.tempangle,
+		  				min(this.angle,2*PI - this.angle)+this.tempangle);
+		  			pop();
+		  			this.pole.draw();
+		  			this.center.draw();
+				};
+			}
+			
+		};
+
+		let Lens = function(p1,p2,p3,roc){
+			if(typeof Lens.prototype.type === "undefined")
+				Lens.prototype.type = "Lens";
+
+			this.roc = roc;
+			this.pole=p1;
+			this.start=p2;
+			this.end = p3;
+			this.angle=PI/2;
+			this.tempangle=0;
+			this.center1=new Point(this.pole.x-roc*cos(this.angle),this.pole.y);
+			this.center2=new Point(this.pole.x+roc*cos(this.angle),this.pole.y);
+			      
+			if(typeof this.setStart !=='function'){
+		      		Lens.prototype.setStart = function(x, y){
+				this.start = new Point(x,y);
+					if (abs(this.pole.y-this.start.y)<=this.roc && abs(this.pole.y-this.start.y)>0)
+						this.angle=asin(abs(this.pole.y-this.start.y)/this.roc);
+					else	
+						this.angle=PI/2;
+					this.center1=new Point(this.pole.x-this.roc*cos(this.angle),this.pole.y);
+					this.center2=new Point(this.pole.x+this.roc*cos(this.angle),this.pole.y);
+        			}
+      			}
+
+			if(typeof this.setEnd !=='function'){
+			      	Lens.prototype.setEnd = function(x, y){
+					this.end = new Point(x,y);
+					this.tempangle = atan2((this.end.y-this.pole.y),(this.end.x-this.pole.x));
+					this.center1.x=this.roc*cos(this.angle)*cos(this.tempangle) + this.pole.x;			
+					this.center1.y=this.roc*cos(this.angle)*sin(this.tempangle) + this.pole.y;
+					this.center2.x=this.roc*cos(this.angle)*cos(this.tempangle+PI) + this.pole.x;			
+					this.center2.y=this.roc*cos(this.angle)*sin(this.tempangle+PI) + this.pole.y;
+					this.tempangle += PI;
+        			}
+			}
+			
+			if(typeof this.draw !=='function'){
+				Lens.prototype.draw = function(){
+					push();
+		  			arc(this.center1.x,this.center1.y,this.roc*2,this.roc*2,-this.angle+this.tempangle,this.angle+this.tempangle,OPEN);
+					arc(this.center2.x,this.center2.y,this.roc*2,this.roc*2,-this.angle+this.tempangle + PI,this.angle+this.tempangle + PI,OPEN);
+		  			pop();
+		  			this.pole.draw();
+		  			this.center1.draw();
+					this.center2.draw();
+
+				};
+			}
+		};
+
+		let bodyList     = [];
+		let state        = {};
+		let tempRedoList = [];
+		let rayList     = [];
+
+
+		document.querySelectorAll("ul.toolbar li button").forEach(function(button){
+			button.onclick = function(){
+				if(state.newBody !== undefined)
+					bodyList.pop();
+				state = {newBody:button.id, step:0};
+				// input(state.newBody);
+			}
+		});
+
+		grid = true;
+		document.getElementById("grid").onclick = function(){
+			grid^= true;
+		}
+
+
+		document.getElementById("undo").onclick = function(){
+			if(state.newBody !== undefined){
+				//to-dos UNDO FOR PENDING BODIES
+			}
+			else{
+				if(bodyList.length > 0)
+					tempRedoList.push(bodyList.pop());
+			}
+		}
+
+		document.getElementById("redo").onclick = function(){
+			if(state.newBody !== undefined){
+				//to-dos UNDO FOR PENDING BODIES
+			}
+			else{
+				if(tempRedoList.length > 0)
+					bodyList.push(tempRedoList.pop());
+			}
+		}
+
+		function setup(){
+			let canvas = createCanvas(windowWidth, windowHeight);
+			canvas.parent('sketch-holder');
+		}
+
+		function mousePressed(){
+			if(state.newBody === undefined)
+				return
+
+			switch(state.newBody){
+				case 'point-btn':
+					switch(state.step){
+						case 0:
+							let newPoint = new Point(mouseX,mouseY);
+							bodyList.push(newPoint);
+							state = {}
+							break;
+					}
+				break;
+
+				case 'ray-btn':
+					switch(state.step){
+						case 0:
+							let newRay1 = new Ray(new Point(mouseX, mouseY), new Point(mouseX, mouseY));
+							bodyList.push(newRay1);
+							rayList.push(newRay1);
+							state.step = 1;
+							break;
+						case 1:
+							let newRay  = rayList.pop();
+							bodyList.pop();
+							bodyList.push(newRay);
+							rayList.push(newRay);
+							state = {};
+							break;
+					}
+				break;
+				case 'mirror-btn':
+					switch(state.step){
+						case 0:
+							roc = 2*prompt('enter focal length');
+							bodyList.push(new Mirror(new Point(mouseX,mouseY),new Point(mouseX,mouseY),new Point(mouseX,mouseY),roc));
+							state.step = 1;
+							break;
+						case 1:
+							let newMirror = bodyList.pop();
+							newMirror.start = new Point(mouseX,mouseY);
+							bodyList.push(newMirror);
+							state.step = 2;
+							break;
+		   				case 2:
+						   	let new2Mirror = bodyList.pop();
+							new2Mirror.end = new Point(mouseX,mouseY);
+							bodyList.push(new2Mirror);
+							state = {};
+							break;
+					}
+				break;
+
+				case 'lens-btn':
+					switch(state.step){
+						case 0:
+							roc = 2*prompt('enter focal length');
+							bodyList.push(new Lens(new Point(mouseX,mouseY),new Point(mouseX,mouseY),new Point(mouseX,mouseY),roc));
+							state.step = 1;
+							break;
+						case 1:
+							let newLens = bodyList.pop();
+							newLens.start = new Point(mouseX,mouseY);
+							bodyList.push(newLens);
+							state.step = 2;
+							break;
+						case 2:
+					   		let new2Lens = bodyList.pop();
+							new2Lens.end = new Point(mouseX,mouseY);
+							bodyList.push(new2Lens);
+							state = {};
+							break;
+					}
+      			break;
+      			case 'plain-btn':
+      				switch(state.step){
+      					case 0:
+							let newPlain = new Plain(new Point(mouseX, mouseY), new Point(mouseX, mouseY));
+							bodyList.push(newPlain);
+							state.step = 1;
+							break;
+						case 1:
+							let new2Plain  = bodyList.pop();
+							new2Plain.setPlainNext(new Point(mouseX,mouseY));
+							bodyList.push(new2Plain);
+							state = {};
+							break;
+      				}
+      			break;
+      			case 'polyMirror-btn':
+					switch(state.step){
+						case 0:
+							let newPolyMirror = new polyMirror(new Point(mouseX,mouseY), new Point(mouseX,mouseY));
+							bodyList.push(newPolyMirror);
+							state.step = 1;
+							break;
+						case 1:
+							let new2PolyMirror = bodyList.pop();
+							let new2Plain = new2PolyMirror.mirrorList.pop();
+							new2Plain.setPlainNext(p=new Point(mouseX,mouseY));
+							new2PolyMirror.mirrorList.push(new2Plain);
+							let new3Plain = new polyMirror(p, p);
+							new2PolyMirror.mirrorList.push(new3Plain);
+							bodyList.push(new2PolyMirror);
+							state = {};
+							break;
+
+
+					}
+				break;
+      			case 'medium-btn':
+      				switch(state.step){
+      					case 0:
+      						RI = 2*prompt('enter refractive index');
+							let newMedium = new Medium(new Point(mouseX, mouseY), new Point(mouseX, mouseY));
+							bodyList.push(newMedium);
+							state.step = 1;
+							break;
+						case 1:
+							let new2Medium  = bodyList.pop();
+							new2Medium.setMediumNext(new Point(mouseX,mouseY));
+							bodyList.push(new2Medium);
+							state = {};
+							break;
+      				}
+      			break;
+			}
+		}
+
+		function mouseMoved(){
+			if(state.newBody === undefined)
+				return;
+
+			switch(state.newBody){
+				case 'ray-btn':
+					switch(state.step){
+						case 1:
+							let newRay  = rayList.pop();
+							bodyList.pop();
+							newRay = new Ray(newRay.start, new Point(mouseX,mouseY));
+							bodyList.push(newRay);
+							rayList.push(newRay);
+							break;
+					}
+				break;
+				case 'mirror-btn':
+					switch(state.step){
+						case 1:
+							let newMirror = bodyList.pop();
+							newMirror.setStart(mouseX,mouseY);
+							bodyList.push(newMirror);
+							break;
+						case 2:
+					    		let new2Mirror = bodyList.pop();
+							new2Mirror.setEnd(mouseX,mouseY);
+							bodyList.push(new2Mirror);
+							break;
+					}
+				break;
+				case 'lens-btn':
+					switch(state.step){
+						case 1:
+							let newLens = bodyList.pop();
+							newLens.setStart(mouseX,mouseY);
+							bodyList.push(newLens);
+							break;
+						case 2:
+					    		let new2Lens = bodyList.pop();
+							new2Lens.setEnd(mouseX,mouseY);
+							bodyList.push(new2Lens);
+							break;
+					}
+				break;
+				case 'plain-btn':
+					switch(state.step){
+						case 1:
+							let newPlain  = bodyList.pop();
+							newPlain.plainNext = new Point(mouseX,mouseY);
+							bodyList.push(newPlain);
+							break;
+				}
+				break;
+				case 'polyMirror-btn':
+					switch(state.step){
+						case 1:
+							let newPolyMirror  = bodyList.pop();
+							let newPlain = newPolyMirror.mirrorList.pop();
+							newPlain.plainNext = new Point(mouseX,mouseY);
+							newPolyMirror.mirrorList.push(newPlain);
+							bodyList.push(newPolyMirror);
+							break;
+				}
+				break;
+				case 'medium-btn':
+					switch(state.step){
+						case 1:
+							let newMedium  = bodyList.pop();
+							newMedium.setMediumNext(new Point(mouseX,mouseY));
+							bodyList.push(newMedium);
+							break;
+				}
+				break;
+			}
+		}
+		function drawGrid(){      
+			push();
+			stroke(0);
+			strokeWeight(1);			
+			for(i=0;i<=windowWidth;i+=10)
+			    line(i,0,i,windowHeight);
+			for(i=0;i<=windowHeight;i+=10)
+				line(0,i,windowWidth,i);
+			pop();
+		}
+
+		function draw(){
+			background(38);
+			stroke(255);
+			strokeWeight(4);
+			fill(100);
+			//new Point(0,0).draw();
+			if(grid)
+				drawGrid();
+
+			
+
+			rayList.forEach(function(ray){
+				ray.checkIntersect(bodyList);
+			});
+			
+			bodyList.forEach(function(body){
+				body.draw();
+			});
+			
+		}
+		
+	</script>
+</body>
+</html>
